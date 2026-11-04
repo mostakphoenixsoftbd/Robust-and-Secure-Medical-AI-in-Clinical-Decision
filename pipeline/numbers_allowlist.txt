@@ -1,0 +1,53 @@
+# Fixed design constants quoted in the manuscript (from config.py / PROTOCOL.md). Never put results here.
+# Split and seeds
+70
+20
+# Budgets: CXR eps in /255 units; ECG in mV and µV; EHR relative %
+255
+0.5
+0.010
+0.025
+0.050
+0.100
+25
+50
+100
+# Attacks
+20
+200
+300
+500
+1000
+1,500
+# Defences / training
+0.25
+0.10
+95
+32
+6,000
+15,000
+30
+# Inputs: 12-lead, 100 Hz, 1000 samples, 224 px, 24 h window, 40 Hz band edge
+12
+24
+40
+224
+# Thresholds
+0.90
+90
+# Model architecture and inputs: 11 vitals, 13 labs, DenseNet-121, 32-128 channels, GRU 64 units
+11
+13
+121
+128
+64
+# Certification alpha
+0.001
+# Software versions (Python 3.11, PyTorch 2.14, DuckDB 2.0, scikit-learn 1.9, LightGBM 4.7, WFDB 4.3)
+3.11
+2.14
+2.0
+1.9
+4.7
+4.3
+6205  # postcode, University of Rajshahi (title page)

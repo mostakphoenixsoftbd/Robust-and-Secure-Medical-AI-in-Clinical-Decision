@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+*.pt
+*.npz
+*.parquet
+*.csv
+adv_cache/
