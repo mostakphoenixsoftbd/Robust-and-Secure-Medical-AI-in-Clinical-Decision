@@ -34,17 +34,35 @@ def f0(x):
 
 
 def ci(v, key, fmt):
+    sup = small(v, key)
+    if sup:
+        return sup
     c = v.get(f"{key}_ci")
     return f"{fmt(v[key])} ({fmt(c[0])}-{fmt(c[1])})" if c else fmt(v.get(key))
+
+
+def small(v, key):
+    """PhysioNet DUA: a per-1,000 rate that corresponds to 1-9 patients is shown as '<x', where x is the
+    rate that 10 patients would give in an attack set of size n (CI omitted, since it would reveal it)."""
+    n, x = v.get("n"), v.get(key)
+    if not n or x is None:
+        return None
+    k = round(x * n / 1000)
+    return f"<{-(-10000 // n)}" if 1 <= k <= 9 else None
+
+
+def p0(v, key):
+    """Per-1,000 rate with small-cell suppression."""
+    return small(v, key) or f0(v.get(key))
 
 
 def eps_label(task, eps_key):
     e = float(eps_key)
     if task == "cxr":
-        return f"{e * 255:g}/255"
+        return f"{round(e * 255, 3):g}/255"           # keys are 6 significant digits: 0.00196078 -> 0.5
     if task == "ecg":
-        return f"{e * 1000:g} µV"
-    return f"{e * 100:g}%"
+        return f"{round(e * 1000, 3):g} µV"
+    return f"{round(e * 100, 3):g}%"
 
 
 def table(header, rows):
@@ -60,6 +78,10 @@ def main():
     have = [t for t in ("cxr", "ecg", "ehr") if res[t]]
     missing = [t for t in ("cxr", "ecg", "ehr") if not res[t]]
     note = f"\n\n_Not yet available: {', '.join(missing)}._\n" if missing else "\n"
+
+    supnote = ("\n_Rates per 1,000 that correspond to 1-9 patients in the attack set are shown as \"<x\", where x is "
+               "the rate for 10 patients, without confidence interval (PhysioNet data use agreement). † Withheld "
+               "because, with the total, it would reveal a suppressed cell._\n")
 
     # Table 1: cohorts and splits
     rows = []
@@ -104,13 +126,19 @@ def main():
             for att in ("PGD", "APGD", "Square", "Transfer"):
                 v = a.get(att, {}).get(eps)
                 if v:
+                    fn, fp = p0(v, "induced_fn_per_1000"), p0(v, "induced_fp_per_1000")
+                    tot = ci(v, "flips_per_1000", f0)
+                    if not tot.startswith("<"):
+                        if fn.startswith("<") and not fp.startswith("<"):
+                            fp = "†"
+                        elif fp.startswith("<") and not fn.startswith("<"):
+                            fn = "†"
                     rows.append([TASK_NAME[t], DEF_NAME[d], att, f3(v["auroc_adv"]), f3(v["robust_accuracy"]),
-                                 ci(v, "flips_per_1000", f0), f0(v["induced_fn_per_1000"]),
-                                 f0(v["induced_fp_per_1000"])])
+                                 tot, fn, fp])
     (OUT / "table3_attacks_primary.md").write_text(
         "# Table 3. Attacks at the primary budget (CXR 2/255, ECG 50 µV, ICU 5%)\n\n" +
         table(["Task", "Defence", "Attack", "AUROC under attack", "Robust accuracy",
-               "Flips/1000 (95% CI)", "Induced FN/1000", "Induced FP/1000"], rows) + note, encoding="utf-8")
+               "Flips/1000 (95% CI)", "Induced FN/1000", "Induced FP/1000"], rows) + note + supnote, encoding="utf-8")
 
     # Table S1: PGD budget sweep
     rows = []
@@ -120,10 +148,10 @@ def main():
             for e in sorted(pgd, key=float):
                 v = pgd[e]
                 rows.append([TASK_NAME[t], DEF_NAME[d], eps_label(t, e), f3(v["auroc_adv"]),
-                             f3(v["robust_accuracy"]), f0(v["flips_per_1000"])])
+                             f3(v["robust_accuracy"]), p0(v, "flips_per_1000")])
     (OUT / "tableS1_pgd_sweep.md").write_text(
         "# Table S1. PGD over the budget sweep\n\n" +
-        table(["Task", "Defence", "Budget", "AUROC under attack", "Robust accuracy", "Flips/1000"], rows) + note,
+        table(["Task", "Defence", "Budget", "AUROC under attack", "Robust accuracy", "Flips/1000"], rows) + note + supnote,
         encoding="utf-8")
 
     # Table 4: adaptive checks, modality-specific threat models, certification, paired tests
@@ -134,7 +162,7 @@ def main():
         na, ad = A.get("D4", {}).get("PGD_nonadaptive", {}).get(eps), A.get("D4", {}).get("PGD", {}).get(eps)
         if na and ad:
             rows.append([TASK_NAME[t], "D4 squeezing: non-adaptive vs BPDA PGD", "flips/1000",
-                         f"{f0(na['flips_per_1000'])} vs {f0(ad['flips_per_1000'])}"])
+                         f"{p0(na, 'flips_per_1000')} vs {p0(ad, 'flips_per_1000')}"])
         det = A.get("D5", {})
         if det.get("PGD", {}).get(eps):
             rows.append([TASK_NAME[t], "D5 detector: detection rate, PGD", "fraction",
@@ -147,7 +175,7 @@ def main():
                 v = A.get(d, {}).get(att, {}).get(eps)
                 if v:
                     rows.append([TASK_NAME[t], f"{DEF_NAME[d]}: {att}", "AUROC / flips/1000",
-                                 f"{f3(v['auroc_adv'])} / {f0(v['flips_per_1000'])}"])
+                                 f"{f3(v['auroc_adv'])} / {p0(v, 'flips_per_1000')}"])
         cert = res[t].get("certification")
         if cert:
             rows.append([TASK_NAME[t], f"D3 certified: abstain rate (n = {cert['n']})", "fraction",
@@ -159,10 +187,10 @@ def main():
             rows.append([TASK_NAME[t], "LightGBM clean", "AUROC", f3(g["clean"]["auroc"])])
             for k in ("transfer_from_GRU_D0", "transfer_from_surrogate"):
                 rows.append([TASK_NAME[t], f"LightGBM {k.replace('_', ' ')}", "AUROC / flips/1000",
-                             f"{f3(g[k]['auroc_adv'])} / {f0(g[k]['flips_per_1000'])}"])
+                             f"{f3(g[k]['auroc_adv'])} / {p0(g[k], 'flips_per_1000')}"])
     (OUT / "table4_adaptive_specific.md").write_text(
         "# Table 4. Adaptive checks, modality-specific threat models, certification and the GBM target\n\n" +
-        table(["Task", "Analysis", "Measure", "Value"], rows) + note, encoding="utf-8")
+        table(["Task", "Analysis", "Measure", "Value"], rows) + note + supnote, encoding="utf-8")
 
     rows = []
     for t in have:

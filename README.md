@@ -21,7 +21,7 @@ are written outside the repository and must not be shared.
 
 ## Requirements
 
-Python 3.14, CPU only, packages in `requirements.txt`. 16 GB RAM; run one task at a time.
+Python 3.11, CPU only, packages in `requirements.txt`. 16 GB RAM; run one task at a time.
 
 ## Running (from `pipeline/`)
 
@@ -33,6 +33,20 @@ Python 3.14, CPU only, packages in `requirements.txt`. 16 GB RAM; run one task a
 4. `python check_numbers.py ../manuscript/*.md` - checks every number in the manuscript against the
    aggregate result files.
 5. `python -m pytest tests` - unit tests for the attacks.
+
+Helpers used for the paper's CXR run: `bash finish_cxr.sh` waits for the CXR run to finish, then runs
+steps 3-4 and the manuscript build (expects the `manuscript/` folder, which is not in this repository);
+`python cxr_fill_values.py` prints each CXR result used in the manuscript with the key path it comes from.
+Paths in `config.py`, `run_retry.sh` and `finish_cxr.sh` point at the authors' machine (`E:/physionet`);
+change them (or set `ROBUST_OUTPUT_DIR`) before running.
+
+## Changes
+
+- 7 Nov 2026: `run_task.py` caches clean scores per model (local, resumes after a crash without
+  rescoring) and runs CXR gradient attacks in batches of 8 images (`ATTACK_BS`; memory limit on a 16 GB
+  CPU machine; per-image attacks, so only the seeded random start differs); `make_tables.py` rounds
+  budget labels (0.5/255); added `finish_cxr.sh` and `cxr_fill_values.py`.
+- 4 Nov 2026: first release.
 
 The study protocol (budgets, defences, metrics, deviations) is in `PROTOCOL.md`.
 

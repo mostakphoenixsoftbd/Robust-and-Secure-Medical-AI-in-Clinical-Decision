@@ -198,3 +198,7 @@ attack code uses public libraries.
   - CXR attack budget grid reduced from {0.5, 1, 2, 4, 8}/255 (Section 4) to {0.5, 2, 4}/255 via
     `PIPELINE_CXR_EPS` in `pipeline/config.py`; primary budget 2/255 unchanged. 1/255 and 8/255 can be
     added later from `cxr/adv_cache/`. Stated in Methods 2.5.
+- 2026-11-06 deviation (Claude, memory on the shared 16 GB CPU machine; user to review):
+  - CXR attack batch size reduced from 16 to 8 (`ATTACK_BS` in `pipeline/run_task.py`) after an out-of-memory
+    crash on APGD for D3; applies to APGD D3-D6, Square, transfer and certification. Per-image gradients
+    (models in eval mode), so only the partitioning of seeded random draws changes. Stated in Supplement S3.

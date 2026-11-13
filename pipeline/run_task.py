@@ -11,6 +11,7 @@ Writes <OUTPUT_DIR>/<task>/:
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import sys
 import time
@@ -28,6 +29,10 @@ import models as Mo
 from data import TaskData, cat_x, slice_x
 
 BS = {"cxr": 16, "ecg": 250, "ehr": 1000}
+# Gradient attacks on CXR run 8 images per batch (6 Nov 2026): APGD on the smoothed D3 model (EOT x4) ran out of
+# memory at 16 on the shared 16 GB machine. Per-image attacks are independent of batch size apart from the seeded
+# random start; attacks already cached at 16 are kept.
+ATTACK_BS = {"cxr": 8}
 
 
 # --------------------------------------------------------------------------- models
@@ -140,8 +145,9 @@ def run_attack(attack_fn, x_full, y_full, task):
     """Apply an attack batch-wise; attack_fn(x_batch, y_batch) -> adversarial batch."""
     n = len(y_full)
     parts = []
-    for b in range(0, n, BS[task]):
-        sl = slice(b, b + BS[task])
+    bs = ATTACK_BS.get(task, BS[task])
+    for b in range(0, n, bs):
+        sl = slice(b, b + bs)
         parts.append(attack_fn(slice_x(x_full, sl), y_full[sl]))
     return cat_x(parts)
 
@@ -159,6 +165,11 @@ def main(argv=None) -> int:
     torch.manual_seed(0)
     out = U.task_dir(task)
     res_path = out / f"results_{task}{'_smoke' if args.limit else ''}.json"
+    # PIPELINE_HELPER=1: a second worker that pre-fills adv_cache for Square (except D3) and Transfer while the
+    # main run is busy; it writes its own results file and stops after Transfer (main run loads these from cache)
+    helper = os.environ.get("PIPELINE_HELPER") == "1"
+    if helper:
+        res_path = out / f"results_{task}_helper.json"
     tlog_path = out / "training_log.json"
     tlog = json.loads(tlog_path.read_text(encoding="utf-8")) if tlog_path.exists() else {}   # keep earlier runs' histories
     tlog.setdefault("training", {})
@@ -173,21 +184,42 @@ def main(argv=None) -> int:
     va = data.idx("val", primary_only=True)
     te = data.idx("test", primary_only=True)
 
+    # resume: clean scores per (model, index set) are cached locally (row-level, never shared) so a restart
+    # after an out-of-memory crash skips the hours of clean scoring; keyed by the index set and the weights'
+    # timestamps, so retrained weights or a different split invalidate the cache (scores are deterministic:
+    # smoothing noise is seeded)
+    import hashlib
+    wdir = out / "weights"
+    wstamp = max((f.stat().st_mtime_ns for f in wdir.rglob("*") if f.is_file()), default=0) if wdir.exists() else 0
+    ccache = out / ("clean_cache_smoke" if args.limit else "clean_cache")
+    ccache.mkdir(exist_ok=True)
+
+    def cbatched(key, fn, idx):
+        h = hashlib.sha1(np.ascontiguousarray(idx).tobytes() + str(wstamp).encode()).hexdigest()[:16]
+        f = ccache / f"{key}_{h}.npy"
+        if f.exists():
+            return np.load(f)
+        p = batched(fn, data, idx, task)
+        tmp = f.with_name(f.stem + ".tmp.npy")
+        np.save(tmp, p)
+        tmp.replace(f)
+        return p
+
     # thresholds on validation, clean metrics on the full test set
     log["clean"], thr = {}, {}
     xva_scores = {}
     for name, d in defs.items():
-        pv = batched(d["score"], data, va, task)
+        pv = cbatched(f"{name}_val", d["score"], va)
         thr[name] = M.threshold_at_sensitivity(data.y[va], pv)
-        pt = batched(d["score"], data, te, task)
+        pt = cbatched(f"{name}_test", d["score"], te)
         log["clean"][name] = M.clean_metrics(data.y[te], pt, thr[name])
         U.log(f"clean {name}: AUROC {log['clean'][name]['auroc']:.3f}")
     log["clean_d0_seeds"] = {}
     for s, m in zip(C.SEEDS, d0):
-        p = batched(lambda x: torch.sigmoid(m(x)), data, te, task)
+        p = cbatched(f"D0seed{s}_test", lambda x: torch.sigmoid(m(x)), te)
         log["clean_d0_seeds"][f"seed{s}"] = M.clean_metrics(data.y[te], p, M.threshold_at_sensitivity(
-            data.y[va], batched(lambda x: torch.sigmoid(m(x)), data, va, task)))
-    p_sur = batched(lambda x: torch.sigmoid(sur(x)), data, te, task)
+            data.y[va], cbatched(f"D0seed{s}_val", lambda x: torch.sigmoid(m(x)), va)))
+    p_sur = cbatched("surrogate_test", lambda x: torch.sigmoid(sur(x)), te)
     log["clean"]["surrogate"] = M.clean_metrics(data.y[te], p_sur, 0.5)
 
     # attack subset (one row per patient, label-stratified)
@@ -294,6 +326,8 @@ def main(argv=None) -> int:
     n_sq = min(len(y_np), C.SQUARE_SUBSET[task])
     xs_sq, ys_sq = slice_x(xs, slice(0, n_sq)), ys[:n_sq]
     for defn, d in defs.items():
+        if helper and defn == "D3":
+            continue
         # queries to the smoothed classifier use 8 noise draws (final evaluation uses the full count)
         q_score = (lambda x: D.smoothed_prob(d3, task, x, n=8)) if defn == "D3" else d["score"]
         sq_loss = lambda yb, q=q_score: (lambda inp: F.binary_cross_entropy(q(inp).clamp(1e-6, 1 - 1e-6), yb,
@@ -317,6 +351,9 @@ def main(argv=None) -> int:
         return memo["x"]
     for defn in defs:
         record(defn, "Transfer", eps, transfer_x)
+    if helper:
+        U.log("helper done (Square except D3, Transfer cached)")
+        return 0
 
     # GBM (EHR only): black-box target, transfer from the GRU (D0) and from the surrogate
     if task == "ehr":
