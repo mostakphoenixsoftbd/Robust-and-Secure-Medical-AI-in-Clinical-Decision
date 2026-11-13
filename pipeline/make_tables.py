@@ -51,6 +51,19 @@ def small(v, key):
     return f"<{-(-10000 // n)}" if 1 <= k <= 9 else None
 
 
+def pfmt(p):
+    """AME/SAMPL P values: <0.001; three decimals below 0.01 and near 0.05; two otherwise; >0.99."""
+    if p is None:
+        return "-"
+    if p < 0.001:
+        return "<0.001"
+    if p > 0.99:
+        return ">0.99"
+    if p < 0.01 or 0.045 <= p < 0.055:
+        return f"{p:.3f}"
+    return f"{p:.2f}"
+
+
 def p0(v, key):
     """Per-1,000 rate with small-cell suppression."""
     return small(v, key) or f0(v.get(key))
@@ -196,10 +209,10 @@ def main():
     for t in have:
         for d, c in res[t].get("paired_vs_D0_pgd_primary", {}).items():
             rows.append([TASK_NAME[t], DEF_NAME[d], f3(c["diff"]), f"{f3(c['ci'][0])} to {f3(c['ci'][1])}",
-                         f3(c["p_holm"])])
+                         pfmt(c["p_holm"])])
     (OUT / "tableS2_paired.md").write_text(
         "# Table S2. Robust accuracy under PGD (primary budget): defence minus D0, paired bootstrap, Holm\n\n" +
-        table(["Task", "Defence", "Difference", "95% CI", "p (Holm)"], rows) + note, encoding="utf-8")
+        table(["Task", "Defence", "Difference", "95% CI", "P (Holm)"], rows) + note, encoding="utf-8")
     # cross-task consistency: rank defences by robust accuracy under PGD at the primary budget, Kendall's W
     if len(have) >= 2:
         import numpy as np
